@@ -1,0 +1,7 @@
+{
+  "name": "gymlog-bot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Telegram-бот GymLog: вебхук + Gemini, только тренировки и здоровье"
+}
