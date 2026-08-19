@@ -1,4 +1,5 @@
 /* GymLog Bot — вебхук Telegram + Gemini (Vercel serverless) */
+import { redisReady, waterGet, waterIncr, goalGet, fmtMl } from './_lib.js';
 
 const APP_URL = 'https://issageraev.github.io/gymlog/';
 
@@ -48,6 +49,46 @@ async function askGemini(text) {
   return answer.slice(0, 4000);
 }
 
+/* Распознавание сообщений о воде.
+   Понимает: "+500", "-250", "вода 500", "вода 0,5", "0.5 л", "500 мл", "/water", "вода".
+   Голое число без знака/единицы/слова «вода» водой НЕ считается — уходит в Gemini. */
+function parseWater(text) {
+  const t = text.toLowerCase().replace(',', '.').replace(/^\/water(@\w+)?/, 'вода').trim();
+  if (/^вода$/.test(t)) return { show: true };
+  const m = t.match(/^(вода\s*)?([+-]?)(\d+(?:\.\d+)?)\s*(л|мл|l|ml)?$/);
+  if (!m) return null;
+  const [, word, sign, num, unit] = m;
+  if (!word && !sign && !unit) return null; // голое число — не вода
+  let v = parseFloat(num);
+  if (unit === 'л' || unit === 'l' || (!unit && v <= 10)) v *= 1000;
+  v = Math.round(v);
+  if (!v || v > 5000) return null;
+  return { delta: sign === '-' ? -v : v };
+}
+
+function todayISO() {
+  // Дата по Москве; при желании смени смещение под свой часовой пояс
+  const d = new Date(Date.now() + 3 * 3600 * 1000);
+  return d.toISOString().slice(0, 10);
+}
+
+async function handleWater(token, chatId, userId, w) {
+  if (!redisReady()) {
+    await tg(token, 'sendMessage', { chat_id: chatId, text: 'Хранилище воды ещё не подключено — загляни чуть позже.' });
+    return;
+  }
+  const date = todayISO();
+  const total = w.show ? await waterGet(userId, date) : await waterIncr(userId, date, w.delta);
+  const goal = await goalGet(userId);
+  const pct = Math.round(total / goal * 100);
+  const head = w.show ? 'Сегодня' : (w.delta > 0 ? `Записал ${fmtMl(w.delta)}. Сегодня` : `Убрал ${fmtMl(-w.delta)}. Сегодня`);
+  const tail = total >= goal ? ' — норма выполнена! 💧' : ` (${pct}% нормы)`;
+  await tg(token, 'sendMessage', {
+    chat_id: chatId,
+    text: `${head}: ${fmtMl(total)} из ${fmtMl(goal)}${tail}\n\nПолная картина — в приложении GymLog (кнопка меню).`
+  });
+}
+
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(200).send('GymLog bot is running');
 
@@ -73,9 +114,14 @@ export default async function handler(req, res) {
         }
       });
     } else {
-      await tg(token, 'sendChatAction', { chat_id: chatId, action: 'typing' });
-      const answer = await askGemini(text);
-      await tg(token, 'sendMessage', { chat_id: chatId, text: answer });
+      const w = parseWater(text);
+      if (w) {
+        await handleWater(token, chatId, msg.from?.id || chatId, w);
+      } else {
+        await tg(token, 'sendChatAction', { chat_id: chatId, action: 'typing' });
+        const answer = await askGemini(text);
+        await tg(token, 'sendMessage', { chat_id: chatId, text: answer });
+      }
     }
   } catch (e) {
     console.error('bot error:', e);
