@@ -25,7 +25,7 @@ async function tg(token, method, payload) {
 async function askGemini(text) {
   const key = process.env.GEMINI_API_KEY;
   const r = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${key}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${key}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -34,14 +34,16 @@ async function askGemini(text) {
         contents: [{ role: 'user', parts: [{ text }] }],
         generationConfig: {
           temperature: 0.6,
-          maxOutputTokens: 800,
-          thinkingConfig: { thinkingBudget: 0 }
+          // модель «думающая»: ~400-800 токенов уходит на размышления, ответу нужен запас
+          maxOutputTokens: 2000
         }
       })
     }
   );
   const data = await r.json();
-  const answer = data?.candidates?.[0]?.content?.parts?.map(p => p.text).join('') || '';
+  const answer = (data?.candidates?.[0]?.content?.parts || [])
+    .filter(p => !p.thought && p.text)
+    .map(p => p.text).join('') || '';
   if (!answer) throw new Error('empty gemini response: ' + JSON.stringify(data).slice(0, 300));
   return answer.slice(0, 4000);
 }
