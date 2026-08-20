@@ -35,8 +35,9 @@ async function askGemini(text) {
         contents: [{ role: 'user', parts: [{ text }] }],
         generationConfig: {
           temperature: 0.6,
-          // модель «думающая»: ~400-800 токенов уходит на размышления, ответу нужен запас
-          maxOutputTokens: 2000
+          maxOutputTokens: 2000,
+          // минимум размышлений: быстрый ответ важнее для чата
+          thinkingConfig: { thinkingLevel: 'low' }
         }
       })
     }
@@ -53,7 +54,7 @@ async function askGemini(text) {
    Понимает: "+500", "-250", "вода 500", "вода 0,5", "0.5 л", "500 мл", "/water", "вода".
    Голое число без знака/единицы/слова «вода» водой НЕ считается — уходит в Gemini. */
 function parseWater(text) {
-  const t = text.toLowerCase().replace(',', '.').replace(/^\/water(@\w+)?/, 'вода').trim();
+  const t = text.toLowerCase().replace(',', '.').replace(/[−–—]/g, '-').replace(/^\/water(@\w+)?/, 'вода').trim();
   if (/^вода$/.test(t)) return { show: true };
   const m = t.match(/^(вода\s*)?([+-]?)(\d+(?:\.\d+)?)\s*(л|мл|l|ml)?$/);
   if (!m) return null;
@@ -64,6 +65,40 @@ function parseWater(text) {
   v = Math.round(v);
   if (!v || v > 5000) return null;
   return { delta: sign === '-' ? -v : v };
+}
+
+/* Похоже на рассказ о выпитой воде? Тогда даём Gemini извлечь объём */
+function maybeWaterPhrase(text) {
+  return /(выпил|выпила|попил|попила|стакан|кружк|бутылк)/i.test(text);
+}
+
+async function extractWaterMl(text) {
+  try {
+    const key = process.env.GEMINI_API_KEY;
+    const r = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${key}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          system_instruction: { parts: [{ text:
+`Определи, сообщает ли пользователь, что он ВЫПИЛ воду или напиток (утверждение о факте, не вопрос и не просьба совета).
+Если да — оцени суммарный объём в миллилитрах. Ориентиры, если размер не указан: стакан ≈ 300 мл, кружка ≈ 350 мл, чашка ≈ 250 мл, бутылка ≈ 500 мл, литр = 1000 мл. «Два стакана» = 600 мл — складывай всё перечисленное.
+Если это вопрос, совет или не про выпитое — верни 0.
+Отвечай строго JSON: {"ml": <целое число>}` }] },
+          contents: [{ role: 'user', parts: [{ text }] }],
+          generationConfig: { temperature: 0, maxOutputTokens: 600, responseMimeType: 'application/json', thinkingConfig: { thinkingLevel: 'low' } }
+        })
+      }
+    );
+    const data = await r.json();
+    const raw = (data?.candidates?.[0]?.content?.parts || []).filter(p => !p.thought && p.text).map(p => p.text).join('');
+    const ml = Math.round(JSON.parse(raw).ml) || 0;
+    return ml > 0 && ml <= 5000 ? ml : 0;
+  } catch (e) {
+    console.error('extractWaterMl:', e);
+    return 0;
+  }
 }
 
 function todayISO() {
@@ -114,7 +149,12 @@ export default async function handler(req, res) {
         }
       });
     } else {
-      const w = parseWater(text);
+      let w = parseWater(text);
+      if (!w && maybeWaterPhrase(text) && redisReady()) {
+        await tg(token, 'sendChatAction', { chat_id: chatId, action: 'typing' });
+        const ml = await extractWaterMl(text);
+        if (ml > 0) w = { delta: ml };
+      }
       if (w) {
         await handleWater(token, chatId, msg.from?.id || chatId, w);
       } else {
