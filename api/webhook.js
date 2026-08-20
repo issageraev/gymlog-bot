@@ -148,6 +148,11 @@ export default async function handler(req, res) {
           inline_keyboard: [[{ text: '🏋️ Открыть GymLog', web_app: { url: APP_URL } }]]
         }
       });
+    } else if (/^\/?(экспорт|export)$/i.test(text)) {
+      await tg(token, 'sendMessage', {
+        chat_id: chatId,
+        text: 'Резервную копию делает приложение: открой GymLog → План → Настройки → Экспорт. Файл придёт сюда, в этот чат.'
+      });
     } else {
       let w = parseWater(text);
       if (!w && maybeWaterPhrase(text) && redisReady()) {
